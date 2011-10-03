@@ -1,37 +1,104 @@
+ /* Copyright (c) 2011, BohuTANG <overred.shuttler at gmail dot com>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright
+ *     notice, this list of conditions and the following disclaimer in the
+ *     documentation and/or other materials provided with the distribution.
+ *   * Neither the name of Redis nor the names of its contributors may be used
+ *     to endorse or promote products derived from this software without
+ *     specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <sys/stat.h>
 #include <assert.h>
+#include <pthread.h>
 #include "bitwise.h"
 #include "storage.h"
-#include "idx.h"
+#include "llru.h"
+#include "hashes.h"
 #include "db.h"
 
+/*primes are:
+ 3UL, 5UL, 7UL, 11UL, 13UL, 17UL, 19UL, 23UL, 29UL, 31UL, 37UL,41UL, 43UL, 47UL,
+ 53UL, 97UL, 193UL, 389UL, 769UL, 1543UL, 3079UL, 6151UL, 12289UL,
+ 24593UL, 49157UL, 98317UL, 196613UL, 393241UL, 786433UL, 1572869UL,
+ 3145739UL, 6291469UL, 12582917UL, 25165843UL, 50331653UL,
+ 100663319UL, 201326611UL, 402653189UL, 805306457UL, 1610612741UL,
+ 3221225473UL, 4294967291UL
+*/
+#define DB_SLOT		(17)
+#define DB_PREFIX 	"ndbs/ness"
 #define IDX_PRIME	(16785407)
+static struct btree 	_btrees[DB_SLOT];
+static struct bloom	_bloom;
 
-static struct idx	_idx;
-static struct btree 	_btree;
+static pthread_t	_bgsync;
+void *bgsync_func();
 
+void *bgsync_func()
+{
+	int i;
+	long long iter=0;
+	while(1){
+/*
+		if(iter>10000){
+			iter=0;
+			usleep(1000);
+		}else
+			iter++;
+*/
+		sleep(5);
+		for(i=0;i<DB_SLOT;i++){
+			fdatasync(_btrees[i].fd);
+			fdatasync(_btrees[i].db_fd);
+		}
+	}
+}
 
+static void bgsync_init()
+{
+	pthread_t t1;
+	if((t1=pthread_create(&_bgsync,NULL,bgsync_func,NULL))!=0)
+		abort();
+	pthread_join(t1,NULL);
+}
 
 /*Sequential read,and mark keys in BloomFilter
 * This is very important to preheat datas.
 */
-static void db_load2mem()
+static void db_loadbloom(struct btree *btree)
 {
-	int i,l,super_size=sizeof(struct btree_super);
-	uint64_t alloc=_btree.alloc-super_size,offset;
+	int i,super_size=sizeof(struct btree_super);
+	uint64_t alloc=btree->alloc-super_size,offset;
 	int newsize=(sizeof(struct btree_table));
-	lseek64(_btree.fd,super_size, SEEK_SET);
+	lseek64(btree->fd,super_size, SEEK_SET);
 	while(alloc>0){
 		struct btree_table *table=malloc(newsize);
-		int r=read(_btree.fd,table, newsize) ;
+		int r=read(btree->fd,table, newsize) ;
 		if(table->size>0){
-			for(l=0;l<table->size;l++){
-				offset=from_be64(table->items[l].offset);
+			for(i=0;i<table->size;i++){
 				if(get_H(offset)==0)
-					idx_set(&_idx,table->items[l].sha1,offset);
+					bloom_add(&_bloom,table->items[i].sha1);
 			}
 		}
 		free(table);
@@ -39,50 +106,72 @@ static void db_load2mem()
 	}
 }
 
-void db_init()
+void db_init(int bufferpool_size,int isbgsync)
 {
-	idx_init(&_idx,IDX_PRIME);
+	int i;	
+	llru_init(bufferpool_size);
+	bloom_init(&_bloom,IDX_PRIME);
 
-	btree_init(&_btree);
-	db_load2mem();	
+	for(i=0;i<DB_SLOT;i++){
+		char pre[256]={0};
+		sprintf(pre,"%s%d",DB_PREFIX,i);
+		btree_init(&_btrees[i],pre,isbgsync);
+		db_loadbloom(&_btrees[i]);	
+	}
+	
+	if(isbgsync)
+		bgsync_init();
 }
 
 
-int db_add(char* key,char* value)
+int db_add(const char* key,const char* value)
 {
-	
-	uint64_t off=btree_insert(&_btree,(const uint8_t*)key,(const void*)value,strlen(value));
+	uint64_t off;
+	int slot=jdb_hash(key)%DB_SLOT;
+	off=btree_insert(&_btrees[slot],(const uint8_t*)key,(const void*)value,strlen(value));
 	if(off==0)
 		return (0);
-
-	uint64_t l_off=idx_get(&_idx,key);
-	if(l_off==0)	
-		idx_set(&_idx,key,off);
-	else {
-		idx_remove(&_idx,key);
-		idx_set(&_idx,key,off);
-	}
+	bloom_add(&_bloom,key);
 	return (1);
 }
 
 
-void *db_get(char* key)
+void *db_get(const char* key)
 {
-	uint64_t val_offset=idx_get(&_idx,key);
-	if(val_offset>0)
-			return btree_get_byoffset(&_btree,val_offset);
+	void *v;
+	int b;
+	b=bloom_get(&_bloom,key);
+	if(b!=0)
+		return NULL;
 
-	return btree_get(&_btree,key);
+	v=llru_get(key);
+	if(v==NULL){
+		char *k_tmp,*v_tmp;
+		int slot=jdb_hash(key)%DB_SLOT;
+		v=btree_get(&_btrees[slot],key);
+		if(v==NULL)
+			return NULL;
+
+		k_tmp=strdup(key);
+		v_tmp=strdup((char*)v);
+		llru_set(k_tmp,v_tmp,strlen(k_tmp),strlen(v_tmp));
+		return v;
+	}else{
+		return strdup((char*)v);
+	}
 }
 
-void db_remove(char* key)
+void db_remove(const char* key)
 {
-	btree_delete(&_btree,key);
-	idx_remove(&_idx,key);
+	int slot=jdb_hash(key)%DB_SLOT;
+	btree_delete(&_btrees[slot],key);
+	llru_remove(key);
 }
 
 void db_destroy()
 {
-	idx_free(&_idx);
-	btree_close(&_btree);
+	int i;
+	for(i=0;i<DB_SLOT;i++)
+		btree_close(&_btrees[i]);
+	llru_free();
 }

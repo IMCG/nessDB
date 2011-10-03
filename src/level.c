@@ -26,59 +26,58 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <stdio.h>
 #include <stdlib.h>
-#include <stdarg.h>
-#include "hashes.h"
-#include "bitwise.h"
-#include "bloom.h"
+#include "level.h"
 
-#define HFUNCNUM 4
-
-void bloom_init(struct bloom *bloom,int size)
+void level_set_head(struct level *level,struct level_node *n)
 {
-	bloom->size=size;
-	bloom->bitset=calloc((size+1)/CHAR_BIT,sizeof(char));
-	bloom->hashfuncs=malloc(HFUNCNUM*sizeof(hashfuncs));
-
-	bloom->hashfuncs[0]=sax_hash;
-	bloom->hashfuncs[1]=sdbm_hash;
-	bloom->hashfuncs[2]=murmur_hash;
-	bloom->hashfuncs[3]=jenkins_hash;
-}
-
-void bloom_add(struct bloom *bloom,const char *k)
-{
-	int i;
-	if(!k)
-		return;
-
-	for(i=0;i<HFUNCNUM;i++){
-		int bit=bloom->hashfuncs[i](k)%bloom->size;
-		SETBIT_1(bloom->bitset,bit);
+	level->count++;
+	if(level->first==NULL){
+		level->first=n;
+	}else{
+		n->pre=NULL;
+		n->nxt=level->first;
+		level->first=n;
 	}
-	bloom->count++;
 }
 
-int bloom_get(struct bloom *bloom,const char *k)
+void level_remove_link(struct level *level,struct level_node *n)
 {
-	int i;
-	if(!k)
-		return -1;
-
-	for(i=0;i<HFUNCNUM;i++){
-		int bit=bloom->hashfuncs[i](k)%bloom->size;
-		if(GETBIT(bloom->bitset,bit)==0)
-			return -1;
+	level->count--;
+	if(n->pre==NULL){
+		level->first=n->nxt;
+		n->nxt=NULL;
+	}else{
+		if(n->nxt==NULL){
+			level->last=n->pre;
+			n->pre=NULL;
+		}else{
+			n->pre->nxt=n->nxt;
+			n->nxt=NULL;
+			n->pre=NULL;
+		}
 	}
-	return 0;
+
+}	
+
+
+void level_free_node(struct level *level,struct level_node *n)
+{
+	if(n){
+		level->used_size-=n->size;
+		level_remove_link(level,n);
+		if(n->key)
+			free(n->key);
+		if(n->value)
+			free(n->value);
+		free(n);
+	}
 }
 
-void bloom_free(struct bloom *bloom)
+void level_free_last(struct level *level)
 {
-	if(bloom->bitset)
-		free(bloom->bitset);
-	
-	if(bloom->hashfuncs)
-		free(bloom->hashfuncs);
+	struct level_node *n=level->last;
+        level_free_node(level,n);
 }
 

@@ -26,59 +26,74 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <stdio.h>
 #include <stdlib.h>
-#include <stdarg.h>
 #include "hashes.h"
-#include "bitwise.h"
-#include "bloom.h"
+#include "ht.h"
 
-#define HFUNCNUM 4
-
-void bloom_init(struct bloom *bloom,int size)
+static size_t find_slot(struct ht *ht,const char* key)
 {
-	bloom->size=size;
-	bloom->bitset=calloc((size+1)/CHAR_BIT,sizeof(char));
-	bloom->hashfuncs=malloc(HFUNCNUM*sizeof(hashfuncs));
-
-	bloom->hashfuncs[0]=sax_hash;
-	bloom->hashfuncs[1]=sdbm_hash;
-	bloom->hashfuncs[2]=murmur_hash;
-	bloom->hashfuncs[3]=jenkins_hash;
+	return  ht->hashfunc(key) % ht->cap;
 }
 
-void bloom_add(struct bloom *bloom,const char *k)
+void	ht_init(struct ht *ht,size_t cap)
 {
-	int i;
-	if(!k)
-		return;
+	ht->size = 0;
+	ht->cap = cap;
+	ht->nodes =calloc(cap, sizeof(struct ht_node*));
+	ht->hashfunc=jdb_hash;
+}
 
-	for(i=0;i<HFUNCNUM;i++){
-		int bit=bloom->hashfuncs[i](k)%bloom->size;
-		SETBIT_1(bloom->bitset,bit);
+void	ht_set(struct ht *ht,const char* k,void* v)
+{
+	size_t slot=find_slot(ht,k);
+	struct ht_node *node=calloc(1, sizeof(struct ht_node));
+	node->next=ht->nodes[slot];
+	node->k=(char*)k;
+	node->v=v;
+
+	ht->nodes[slot]=node;
+	ht->size++;
+}
+
+void* ht_get(struct ht *ht,const char* k)
+{
+	size_t slot=find_slot(ht,k);
+
+	struct ht_node *node=ht->nodes[slot];
+	while(node){
+		if(strcmp(k,node->k)==0)
+			return node->v;
+		node=node->next;
 	}
-	bloom->count++;
+	return NULL;
 }
 
-int bloom_get(struct bloom *bloom,const char *k)
+void	ht_remove(struct ht *ht,const char *k)
 {
-	int i;
-	if(!k)
-		return -1;
+	size_t slot=find_slot(ht,k);
 
-	for(i=0;i<HFUNCNUM;i++){
-		int bit=bloom->hashfuncs[i](k)%bloom->size;
-		if(GETBIT(bloom->bitset,bit)==0)
-			return -1;
+	struct ht_node *node=ht->nodes[slot],*prev=NULL;
+	while(node){
+		if(strcmp(k,node->k)==0){
+			if(prev!=NULL)
+				prev->next=node->next;
+			else
+				ht->nodes[slot]=node->next;
+			ht->size--;
+
+			if(node)
+				free(node);
+		}
+		prev=node;
+		node=node->next;	
 	}
-	return 0;
 }
 
-void bloom_free(struct bloom *bloom)
+
+
+void 	ht_free(struct ht *ht)
 {
-	if(bloom->bitset)
-		free(bloom->bitset);
-	
-	if(bloom->hashfuncs)
-		free(bloom->hashfuncs);
+	free(ht->nodes);
 }
 

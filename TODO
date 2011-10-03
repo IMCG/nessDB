@@ -1,9 +1,15 @@
-nessDB TODO
------------
-WARNING:these todo-lists are suit for nessDB v1.5 only.
+nessDB v1.7 TODO
+----------------
 
 
-WRITE
+TODO
 ======
-* Use Log-Structured-Merge-Tree(LSM-Tree) for INSERT/DELETE/UPDATE.
+* Use LEVEL-LRU for hot-itmes cache
+  Have been COMPLETED!!!
+
+* Use Background-Thread for ADD/UPDATE/REMOVE operations
+  Tested,performance improved,but the logic becomes more complex.Suits for Read-More and Write-Less model,db_lsm is a prototype.
+  
+
+----Happy Nation Day-----
 

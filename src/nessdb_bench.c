@@ -1,3 +1,31 @@
+/* Copyright (c) 2011, BohuTANG <overred.shuttler at gmail dot com>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright
+ *     notice, this list of conditions and the following disclaimer in the
+ *     documentation and/or other materials provided with the distribution.
+ *   * Neither the name of Redis nor the names of its contributors may be used
+ *     to endorse or promote products derived from this software without
+ *     specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+
 /*NOTE:
 	How to do
 	=========
@@ -24,7 +52,9 @@
 #define NUM 		5000000
 #define R_NUM 		10000
 #define REMOVE_NUM	10000
-#define V		"1.6"
+#define BUFFERPOOL	(1024*1024*1024)
+#define BGSYNC		(1)
+#define V		"1.7"
 #define LINE 		"+-----------------------+---------------------------+----------------------------------+---------------------+\n"
 #define LINE1		"--------------------------------------------------------------------------------------------------------------\n"
 
@@ -52,9 +82,7 @@ void random_value()
 	char salt[10]={'1','2','3','4','5','6','7','8','a','b'};
 	int i;
 	for(i=0;i<VALSIZE;i++)
-	{
 		value[i]=salt[rand()%10];
-	}
 }
 
 double _index_size=(double)((double)(KEYSIZE+48)*NUM)/1048576.0;
@@ -73,7 +101,7 @@ void print_header()
 
 void print_environment()
 {
-	printf("nessDB:		version %s(B+ Tree)\n",V);
+	printf("nessDB:		version %s(Multiple && Distributable B+Tree with Level-LRU,Background IO Sync)\n",V);
 	time_t now=time(NULL);
 	printf("Date:		%s",(char*)ctime(&now));
 	
@@ -114,9 +142,9 @@ void db_init_test(int show)
 	double cost;
 	start_timer();
    	cost=get_timer();
-	fprintf(stderr,"loading index......%30s\r","");
+	fprintf(stderr,"loading bloom filter......%30s\r","");
 
-	db_init();
+	db_init(BUFFERPOOL,BGSYNC);
 
 	fflush(stderr);
 	
@@ -137,20 +165,20 @@ void db_write_test()
 	double cost;
 	uint8_t key[KEYSIZE];
 	start_timer();
-	for(i=0;i<NUM;i++){
+	for(i=1;i<NUM;i++){
 		memset(key,0,sizeof(key));
-		sprintf(key,"%ldkey",i);
+		sprintf(key,"%ldkey",rand()%i);
 		if(db_add(key,value))
 			count++;
 		if((i%10000)==0){
-			fprintf(stderr,"write finished %ld ops%30s\r",i,"");
+			fprintf(stderr,"random write finished %ld ops%30s\r",i,"");
 			fflush(stderr);
 		}
 	}
 	
 	cost=get_timer();
 	printf(LINE);
-	printf("|write		(succ:%ld): %.6f sec/op; %.1f writes/sec(estimated); %.1f MB/sec; cost:%.3f(sec)\n"
+	printf("|Random-Write	(done:%ld): %.6f sec/op; %.1f writes/sec(estimated); %.1f MB/sec; cost:%.3f(sec)\n"
 		,count,(double)(cost/NUM)
 		,(double)(NUM/cost)
 		,((_index_size+_data_size)/cost)
@@ -169,23 +197,27 @@ void db_read_random_test()
 	for(i=r_start;i<r_end;i++){
 
 		memset(key,0,sizeof(key));
-		sprintf(key,"%ldkey",rand()%i);
-		void* data=db_get(key);
-		if(data)
-			count++;
+		long long rid=rand()%5;
+		if(rid==0)
+			sprintf(key,"%ldkey",(long)(NUM/2));
 		else
-			printf("nofound!%s\n",key);
-		free(data);
+			sprintf(key,"%ldkey",rand()%i);
+
+		void* data=db_get(key);
+		if(data){
+			count++;
+			free(data);
+		}
 
 		if((count%100)==0){
-			fprintf(stderr,"readrandom finished %ld ops%30s\r",count,"");
+			fprintf(stderr,"random read finished %ld ops%30s\r",count,"");
 			fflush(stderr);
 		}
 
 	}
    	cost=get_timer();
 	printf(LINE);
-	printf("|readrandom	(found:%ld): %.6f sec/op; %.1f reads /sec(estimated); %.1f MB/sec; cost:%.3f(sec)\n"
+	printf("|Random-Read	(found:%ld): %.6f sec/op; %.1f reads /sec(estimated); %.1f MB/sec; cost:%.3f(sec)\n"
 		,count
 		,(double)(cost/R_NUM)
 		,(double)(R_NUM/cost)
@@ -206,21 +238,20 @@ void db_read_seq_test()
 		memset(key,0,sizeof(key));
 		sprintf(key,"%ldkey",i);
 		void* data=db_get(key);
-		if(data)
+		if(data){
 			count++;
-		else
-			printf("nofound!%s\n",key);
-		free(data);
+			free(data);
+		}
 
 		if((count%1000)==0){
-			fprintf(stderr,"readseq finished %ld ops %30s\r",count,"");
+			fprintf(stderr,"sequential read finished %ld ops %30s\r",count,"");
 			fflush(stderr);
 		}
 
 	}
 	cost=get_timer();
 	printf(LINE);
-	printf("|readseq	(found:%ld): %.6f sec/op; %.1f reads /sec(estimated); %.1f MB/sec; cost:%.3f(sec)\n"
+	printf("|Seq-Read	(found:%ld): %.6f sec/op; %.1f reads /sec(estimated); %.1f MB/sec; cost:%.3f(sec)\n"
 		,count
 		,(double)(cost/R_NUM)
 		,(double)(R_NUM/cost)
@@ -245,14 +276,14 @@ void db_remove_test()
 		db_remove(key);
 		count++;
 		if((count%100)==0){
-			fprintf(stderr,"remove random finished %ld ops%30s\r",count,"");
+			fprintf(stderr,"random remove  finished %ld ops%30s\r",count,"");
 			fflush(stderr);
 		}
 
 	}
    	cost=get_timer();
 	printf(LINE);
-	printf("|removerandom	(found:%ld):	%.6f sec/op;	%.1f reads /sec(estimated);	%.1f MB/sec \n"
+	printf("|Rand-Remove	(done:%ld):	%.6f sec/op;	%.1f reads /sec(estimated);	%.1f MB/sec \n"
 		,count
 		,(double)(cost/R_NUM)
 		,(double)(R_NUM/cost)

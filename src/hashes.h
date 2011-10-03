@@ -98,6 +98,7 @@ static unsigned int jdb_hash(const char* key)
     unsigned int c;
     while ((c = *key++))
 	hash = ((hash << 5) + hash) + (unsigned int)c;  /* hash * 33 + c */
+
    return hash;
 }
 

@@ -50,7 +50,7 @@ struct btree {
 
 
 //open or creat index&data files
-int btree_init(struct btree *btree);
+int btree_init(struct btree *btree,const char *db,int isbgsync);
 
 
 /*
@@ -64,6 +64,8 @@ void btree_close(struct btree *btree);
  */
 uint64_t btree_insert(struct btree *btree, const uint8_t *sha1, const void *data,
 		  size_t len);
+
+uint64_t btree_insert_index(struct btree *btree, const uint8_t *sha1,const uint64_t *v_off);
 
 uint64_t btree_insert_data(struct btree *btree, const void *data,
 		  size_t len);
